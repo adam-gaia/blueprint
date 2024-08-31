@@ -136,12 +136,59 @@ let
         systemArgs
         ;
 
-      # Adds the perSystem argument to the NixOS and Darwin modules
+      # Adds the perSystem argument to the NixOS, Darwin, and standalone Home Manager modules
       perSystemModule =
         { pkgs, ... }:
         {
           _module.args.perSystem = systemArgs.${pkgs.system}.perSystem;
         };
+
+      homes = importDir (src + "/homes") (
+        entries:
+        let
+          loadDefaultFn = { value }@inputs: inputs;
+
+          loadDefault = { pkgs }: path: loadDefaultFn (import path { inherit flake inputs pkgs; });
+
+          loadHomeConfig =
+            { pkgs }:
+            path: {
+              value = inputs.home-manager.lib.homeManagerConfiguration {
+                modules = [
+                  perSystemModule
+                  path
+                ];
+                extraSpecialArgs = specialArgs;
+                inherit pkgs;
+              };
+            };
+
+          loadHome =
+            name:
+            { path, type }:
+            if builtins.pathExists (path + "/default.nix") then
+              eachSystem ({ pkgs, ... }: loadDefault { inherit pkgs; } (path + "/default.nix"))
+            else if builtins.pathExists (path + "/home.nix") then
+              eachSystem ({ pkgs, ... }: loadHomeConfig { inherit pkgs; } (path + "/home.nix"))
+            else
+              throw "home profile '${name}' does not have a configuration";
+        in
+        lib.mapAttrs loadHome entries
+      );
+
+      flattenUsernameSystem =
+        attrs:
+        builtins.foldl' (
+          acc: name:
+          let
+            systems = attrs.${name};
+          in
+          builtins.foldl' (acc2: system: acc2 // { "${name}@${system}" = systems.${system}; }) acc (
+            builtins.attrNames systems
+          )
+        ) { } (builtins.attrNames attrs);
+
+      homesBySystem = flattenUsernameSystem homes;
 
       hosts = importDir (src + "/hosts") (
         entries:
@@ -264,6 +311,7 @@ let
 
       darwinConfigurations = lib.mapAttrs (_: x: x.value) (hostsByCategory.darwinConfigurations or { });
       nixosConfigurations = lib.mapAttrs (_: x: x.value) (hostsByCategory.nixosConfigurations or { });
+      homeConfigurations = lib.mapAttrs (_: x: x.value) homesBySystem;
 
       inherit modules;
       darwinModules = modules.darwin;
