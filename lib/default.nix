@@ -199,18 +199,42 @@ let
         ) (lib.attrsToList hosts)
       );
 
-      moduleDirs = builtins.attrNames (builtins.readDir (src + "/modules"));
-      modules = builtins.listToAttrs (
-        map (name: {
-          name = name;
-          value = importDir (src + "/modules/${name}") entriesPath;
-        }) moduleDirs
-      );
+      modules =
+        let
+          path = src + "/modules";
+          moduleDirs = builtins.attrNames (
+            lib.filterAttrs (_name: value: value == "directory") (builtins.readDir path)
+          );
+        in
+        lib.optionalAttrs (builtins.pathExists path) (
+          lib.genAttrs moduleDirs (name: importDir (path + "/${name}") entriesPath)
+        );
     in
     # FIXME: maybe there are two layers to this. The blueprint, and then the mapping to flake outputs.
     {
       formatter = eachSystem (
-        { pkgs, perSystem, ... }: perSystem.self.formatter or pkgs.nixfmt-rfc-style
+        { pkgs, perSystem, ... }:
+        perSystem.self.formatter or (pkgs.writeShellApplication {
+          name = "nixfmt-rfc-style";
+
+          runtimeInputs = [
+            pkgs.findutils
+            pkgs.gnugrep
+            pkgs.nixfmt-rfc-style
+          ];
+
+          text = ''
+            set -euo pipefail
+
+            # Not a git repo, or git is not installed. Fallback
+            if ! git rev-parse --is-inside-work-tree; then
+              exec nixfmt "$@"
+            fi
+
+            # By default `nix fmt` passes "." as the first argument.
+            git ls-files "$@" | grep '\.nix$' | xargs --no-run-if-empty nixfmt
+          '';
+        })
       );
 
       lib = tryImport (src + "/lib") specialArgs;
@@ -266,10 +290,11 @@ let
       nixosConfigurations = lib.mapAttrs (_: x: x.value) (hostsByCategory.nixosConfigurations or { });
 
       inherit modules;
-      darwinModules = modules.darwin;
-      homeModules = modules.home;
+
+      darwinModules = modules.darwin or { };
+      homeModules = modules.home or { };
       # TODO: how to extract NixOS tests?
-      nixosModules = modules.nixos;
+      nixosModules = modules.nixos or { };
 
       templates = importDir (src + "/templates") (
         entries:
